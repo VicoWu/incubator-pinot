@@ -46,6 +46,7 @@ import org.apache.helix.HelixAdmin;
 import org.apache.helix.HelixDataAccessor;
 import org.apache.helix.HelixException;
 import org.apache.helix.HelixManager;
+import org.apache.helix.HelixManagerFactory;
 import org.apache.helix.InstanceType;
 import org.apache.helix.PropertyKey;
 import org.apache.helix.PropertyKey.Builder;
@@ -130,8 +131,10 @@ public class PinotHelixResourceManager {
   private final boolean _isSingleTenantCluster;
   private final boolean _isUpdateStateModel;
   private final boolean _enableBatchMessageMode;
+  private final String _controllerMode;
 
   private HelixManager _helixZkManager;
+  private HelixManager _helixParticipantManager;
   private HelixAdmin _helixAdmin;
   private ZkHelixPropertyStore<ZNRecord> _propertyStore;
   private HelixDataAccessor _helixDataAccessor;
@@ -142,7 +145,8 @@ public class PinotHelixResourceManager {
 
   public PinotHelixResourceManager(@Nonnull String zkURL, @Nonnull String helixClusterName,
       @Nonnull String controllerInstanceId, String dataDir, long externalViewOnlineToOfflineTimeoutMillis,
-      boolean isSingleTenantCluster, boolean isUpdateStateModel, boolean enableBatchMessageMode) {
+      boolean isSingleTenantCluster, boolean isUpdateStateModel, boolean enableBatchMessageMode,
+      String controllerMode) {
     _helixZkURL = HelixConfig.getAbsoluteZkPathForHelix(zkURL);
     _helixClusterName = helixClusterName;
     _instanceId = controllerInstanceId;
@@ -151,31 +155,84 @@ public class PinotHelixResourceManager {
     _isSingleTenantCluster = isSingleTenantCluster;
     _isUpdateStateModel = isUpdateStateModel;
     _enableBatchMessageMode = enableBatchMessageMode;
+    _controllerMode = controllerMode;
   }
 
   public PinotHelixResourceManager(@Nonnull String zkURL, @Nonnull String helixClusterName,
       @Nonnull String controllerInstanceId, @Nonnull String dataDir) {
     this(zkURL, helixClusterName, controllerInstanceId, dataDir, DEFAULT_EXTERNAL_VIEW_UPDATE_TIMEOUT_MILLIS, false,
-        false, true);
+        false, true, null);
   }
 
   public PinotHelixResourceManager(@Nonnull ControllerConf controllerConf) {
     this(controllerConf.getZkStr(), controllerConf.getHelixClusterName(),
         controllerConf.getControllerHost() + "_" + controllerConf.getControllerPort(), controllerConf.getDataDir(),
         controllerConf.getExternalViewOnlineToOfflineTimeout(), controllerConf.tenantIsolationEnabled(),
-        controllerConf.isUpdateSegmentStateModel(), controllerConf.getEnableBatchMessageMode());
+        controllerConf.isUpdateSegmentStateModel(), controllerConf.getEnableBatchMessageMode(), controllerConf.getControllerMode());
   }
 
   /**
    * Create Helix cluster if needed, and then start a Pinot controller instance.
    */
   public synchronized void start() {
+    HelixSetupUtils.ControllerMode controllerMode = HelixSetupUtils.ControllerMode.getMode(_controllerMode);
+    switch (controllerMode) {
+      case DUAL:
+        setUpDualModeController();
+        break;
+      case PINOT_ONLY:
+        setUpPinotOnlyController();
+        break;
+      case HELIX_ONLY:
+        setUpHelixOnlyController();
+        break;
+      default:
+        LOGGER.error("Invalid mode: " + controllerMode);
+    }
+  }
+
+  private void setUpDualModeController() {
+    // Register and connect instance as Helix controller.
     _helixZkManager = HelixSetupUtils
         .setup(_helixClusterName, _helixZkURL, _instanceId, _isUpdateStateModel, _enableBatchMessageMode);
+    // Register and connect instance as participant to Helix.
+    _helixParticipantManager = registerAndConnectToHelix(InstanceType.PARTICIPANT);
+    startPinotFunctionality();
+  }
+
+  private void setUpPinotOnlyController() {
+    // Register and connect instance as admin to Helix.
+    _helixZkManager = registerAndConnectToHelix(InstanceType.ADMINISTRATOR);
+    // Register and connect instance as participant to Helix.
+    _helixParticipantManager = registerAndConnectToHelix(InstanceType.PARTICIPANT);
+    startPinotFunctionality();
+  }
+
+  private void setUpHelixOnlyController() {
+    // Register and connect instance as Helix controller.
+    _helixZkManager = HelixSetupUtils
+        .setup(_helixClusterName, _helixZkURL, _instanceId, _isUpdateStateModel, _enableBatchMessageMode);
+  }
+
+  private HelixManager registerAndConnectToHelix(InstanceType instanceType) {
+    HelixManager helixManager =
+        HelixManagerFactory.getZKHelixManager(_helixClusterName, _instanceId, instanceType, _helixZkURL);
+    try {
+      helixManager.connect();
+      return helixManager;
+    } catch (Exception e) {
+      String errorMsg = String.format("Exception when connecting the instance %s as %s to Helix.", _instanceId, instanceType.name());
+      LOGGER.error(errorMsg, e);
+      throw new RuntimeException(errorMsg);
+    }
+  }
+
+  private void startPinotFunctionality() {
     Preconditions.checkNotNull(_helixZkManager);
     _helixAdmin = _helixZkManager.getClusterManagmentTool();
     _propertyStore = _helixZkManager.getHelixPropertyStore();
     _helixDataAccessor = _helixZkManager.getHelixDataAccessor();
+
     // Cache instance zk paths.
     BaseDataAccessor<ZNRecord> baseDataAccessor = _helixDataAccessor.getBaseDataAccessor();
 
@@ -193,7 +250,9 @@ public class PinotHelixResourceManager {
    * Stop the Pinot controller instance.
    */
   public synchronized void stop() {
-    _segmentDeletionManager.stop();
+    if (_segmentDeletionManager != null) {
+      _segmentDeletionManager.stop();
+    }
     _helixZkManager.disconnect();
   }
 
@@ -420,6 +479,10 @@ public class PinotHelixResourceManager {
       }
     }
     return new ArrayList<>(rawTableNames);
+  }
+
+  public String getControllerMode() {
+    return _controllerMode;
   }
 
   /**
