@@ -100,21 +100,28 @@ public class AzurePinotFS extends PinotFS {
   @Override
   public boolean move(URI srcUri, URI dstUri, boolean overwrite)
       throws IOException {
-    if (exists(dstUri)) {
-      if (overwrite) {
-        delete(dstUri, true);
-      } else {
-        // dst file exists, returning
-        return false;
-      }
-    } else {
-      URI parentUri = Paths.get(dstUri).toUri();
-      // ensure the dst path exists
-      _adlStoreClient.createDirectory(parentUri.getPath());
-    }
-    if (exists(dstUri) && !overwrite) {
+    if (!exists(srcUri)) {
+      LOGGER.warn("Source {} does not exist", srcUri);
       return false;
     }
+    // if dst is an existing file
+    if (exists(dstUri) && !isDirectory(dstUri)) {
+      if (isDirectory(srcUri)) {
+        String errorMsg = String.format("Source %s is a directory while destination %s is a file", srcUri, dstUri);
+        LOGGER.warn(errorMsg);
+        throw new IOException(errorMsg);
+      } else {
+        if (overwrite) {
+          delete(dstUri, true);
+        } else {
+          // dst file exists, returning
+          return false;
+        }
+      }
+    }
+    // ensures the parent path of dst exists.
+    URI parentUri = Paths.get(dstUri).toUri();
+    _adlStoreClient.createDirectory(parentUri.getPath());
     //rename the file
     return _adlStoreClient.rename(srcUri.getPath(), dstUri.getPath());
   }

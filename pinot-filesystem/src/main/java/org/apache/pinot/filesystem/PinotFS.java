@@ -59,12 +59,15 @@ public abstract class PinotFS implements Closeable {
    * Moves the file or directory from the src to dst. Does not keep the original file. If the dst has parent directories
    * that haven't been created, this method will create all the necessary parent directories.
    * If both src and dst are files, dst will be overwritten.
-   * If src is a file and dst is a directory, src file will get moved under dst directory.
+   * If src is a file and dst is an empty directory, src file will get moved under dst directory.
    * If both src and dst are directories, src directory will get moved under dst directory.
    * If src is a directory and dst is a file, operation will fail.
    * For example, if a file /a/b/c is moved to a file /x/y/z, in the case of overwrite, the directory /a/b still exists,
    * but will not contain the file 'c'. Instead, /x/y/z will contain the contents of 'c'.
    * If a file /a is moved to a directory /x/y, all the original files under /x/y will be kept.
+   *
+   * As of now, the usage of this API in Pinot is just to move a file to a file. So please specify the full names of
+   * both src and dst to make less confusion.
    * @param srcUri URI of the original file
    * @param dstUri URI of the final file location
    * @param overwrite true if we want to overwrite the dstURI, false otherwise
@@ -83,6 +86,9 @@ public abstract class PinotFS implements Closeable {
    * If src is a directory and dst is a file, operation will fail.
    * For example, if a file /x/y/z is copied to /a/b/c, /x/y/z will be retained and /x/y/z will also be present as /a/b/c;
    * if a file /a is copied to a directory /x/y, all the original files under /x/y will be kept.
+   *
+   * As of now, the usage of this API in Pinot is just to copy a file to a file. So please specify the full names of
+   * both src and dst to make less confusion.
    * @param srcUri URI of the original file
    * @param dstUri URI of the final file location
    * @return true if copy is successful

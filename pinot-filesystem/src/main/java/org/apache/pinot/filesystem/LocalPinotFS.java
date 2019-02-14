@@ -77,22 +77,34 @@ public class LocalPinotFS extends PinotFS {
   @Override
   public boolean move(URI srcUri, URI dstUri, boolean overwrite)
       throws IOException {
+    if (!exists(srcUri)) {
+      LOGGER.warn("Source {} does not exist", srcUri);
+      return false;
+    }
     File srcFile = new File(decodeURI(srcUri.getRawPath()));
     File dstFile = new File(decodeURI(dstUri.getRawPath()));
-    if (dstFile.exists()) {
-      if (overwrite) {
-        FileUtils.deleteQuietly(dstFile);
+    // if dst is an existing file
+    if (dstFile.exists() && !dstFile.isDirectory()) {
+      if (srcFile.isDirectory()) {
+        String errorMsg = String.format("Source %s is a directory while destination %s is a file", srcUri, dstUri);
+        LOGGER.warn(errorMsg);
+        throw new IOException(errorMsg);
       } else {
-        // dst file exists, returning
-        return false;
+        if (overwrite) {
+          delete(dstUri, true);
+        } else {
+          // dst file exists, returning
+          return false;
+        }
       }
-    } else {
-      // ensure the dst path exists
-      FileUtils.forceMkdir(dstFile.getParentFile());
     }
-
-    Files.move(srcFile.toPath(), dstFile.toPath());
-
+    // ensures the parent path of dst exists.
+    FileUtils.forceMkdir(dstFile.getParentFile());
+    if (srcFile.isDirectory()) {
+      FileUtils.moveDirectoryToDirectory(srcFile, dstFile, true);
+    } else {
+      FileUtils.moveFile(srcFile, dstFile);
+    }
     return true;
   }
 
